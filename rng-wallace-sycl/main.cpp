@@ -1,10 +1,18 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <iostream>
+#include <iomanip>
 #include <math.h>
 #include "common.h"
 #include "rand_helpers.h"
 #include "constants.h"
+
+#ifdef FIXED_WG_SIZE
+#define WG_SIZE_ATTR cl::sycl::attribute<cl::sycl::reqd_work_group_size<WALLACE_NUM_THREADS>>
+#else 
+#define WG_SIZE_ATTR
+#endif
 
 void Hadamard4x4a(float &p, float &q, float &r, float &s)
 {
@@ -57,13 +65,16 @@ int main()
   range<1> rng_wallace_threads(WALLACE_NUM_THREADS);
   const unsigned m_seed = 1;
   
-  for (int i = 0; i < 100; i++) {
+  std::vector<double> timings(100);
+  const int nWarmup = 10;
+  for (int i = 0; i < 100 + nWarmup; i++) {
+    auto start = std::chrono::high_resolution_clock::now();
     q.submit([&] (handler &h) {
       auto globalPool = devPool.get_access<sycl_read_write>(h);
       auto generatedRandomNumberPool = device_randomNumbers.get_access<sycl_write>(h);
       auto chi2Corrections = devicerngChi2Corrections.get_access<sycl_read>(h);
       accessor<float, 1, sycl_read_write, access::target::local> pool (WALLACE_POOL_SIZE + WALLACE_CHI2_SHARED_SIZE, h);
-      h.parallel_for<class wallace>(nd_range<1>(rng_wallace_grid, rng_wallace_threads), [=] (nd_item<1> item) { 
+      h.parallel_for<class wallace>(nd_range<1>(rng_wallace_grid, rng_wallace_threads), WG_SIZE_ATTR(([=] (nd_item<1> item) { 
         const unsigned lcg_a = 241;
         const unsigned lcg_c = 59;
         const unsigned lcg_m = 256;
@@ -145,8 +156,11 @@ int main()
         #pragma unroll
         for (unsigned i = 0; i < 8; i++)
           globalPool[offset + lid + WALLACE_NUM_THREADS * i] = pool[lid + WALLACE_NUM_THREADS * i];
-      });
-    });
+      })));
+    }).wait();
+    auto stop = std::chrono::high_resolution_clock::now();
+    if(i >= nWarmup)
+    timings[i - nWarmup] = std::chrono::duration<double>(stop - start).count();
 
     q.submit([&] (handler &h) {
       auto d_rng_acc = device_randomNumbers.get_access<sycl_read>(h);
@@ -156,11 +170,27 @@ int main()
 
 #ifdef DEBUG
     // random numbers are different for each i iteration 
+    std::cout << std::fixed << std::setprecision(3);
     for (unsigned int n = 0; n < WALLACE_OUTPUT_SIZE; n++) 
-    	printf("%.3f\n", randomNumbers[n]);
+      std::cout << randomNumbers[n] << "\n";
+    std::cout << std::endl;
 #endif
   }
   
+  auto minTime = *std::min_element(timings.cbegin(), timings.cend());
+  auto avgTime = std::accumulate(timings.cbegin(), timings.cend(), 0.) / static_cast<double>(timings.size());
+  std::sort(timings.begin(), timings.end());
+  auto median = timings[timings.size() / 2];
+  double variance = std::accumulate(timings.cbegin(), timings.cend(), 0., [avgTime](double a, double b) {
+    double diff = b - avgTime;
+    return a + diff * diff;
+    }) / timings.size();
+  auto stddev = std::sqrt(variance);
+
+  auto geoMean = std::pow(std::accumulate(timings.cbegin(), timings.cend(), 1., std::multiplies{}), 1./timings.size());
+
+  std::cout << "num: " << WALLACE_OUTPUT_SIZE << "\nmin: " << minTime << "\nmax GN/sec: " << (WALLACE_OUTPUT_SIZE / minTime) * 1e-9 << "\navg: " << avgTime << "\navg GN/sec: " << (WALLACE_OUTPUT_SIZE / avgTime) * 1e-9 << "\nmedian: " << median << "\nmedian GN/sec: " << (WALLACE_OUTPUT_SIZE / median) * 1e-9 << "\nstddev: " << stddev << "\ngeomean: " << geoMean << "\ngeomean GN/sec: " << (WALLACE_OUTPUT_SIZE / geoMean) * 1e-9 << std::endl;
+
   free(rngChi2Corrections);
   free(randomNumbers);
   free(hostPool);

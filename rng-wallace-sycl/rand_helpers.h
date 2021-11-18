@@ -269,19 +269,19 @@ double RandN()
 		return cn;
 	}
 
-	double a=sqrt(-2*log(Rand()));
+	double a=std::sqrt(-2*std::log(Rand()));
 	double b=6.283185307179586476925286766559*Rand();
-	cn=sin(b)*a;
+	cn=std::sin(b)*a;
 	cached=true;
-	return cos(b)*a;
+	return std::cos(b)*a;
 }
 #endif // USE_ZIGGURAT
 #endif // USE_GSL
 
 double MakeChi2Scale(unsigned N)
 {
-	const double chic1 = sqrt ( sqrt (1.0 - 1.0 / N));
-	const double chic2 = sqrt (1.0 - chic1 * chic1);
+	const double chic1 = std::sqrt ( std::sqrt (1.0 - 1.0 / N));
+	const double chic2 = std::sqrt (1.0 - chic1 * chic1);
 	return chic1+chic2*RandN();
 }
 
